@@ -1,0 +1,124 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+
+  batch:
+    send_batch_size: 1024
+    timeout: 5s
+
+  resource:
+    attributes:
+      - key: service.instance.id
+        action: upsert
+        value: ${HOSTNAME}
+
+  tail_sampling:
+    decision_wait: 10s
+    num_traces: 20000
+    expected_new_traces_per_sec: 250
+    policies:
+      - name: keep-errors
+        type: status_code
+        status_code:
+          status_codes: [ERROR]
+
+      - name: keep-ride-slo-breaches
+        type: and
+        and:
+          sub_policies:
+            - name: is-ride
+              type: string_attribute
+              string_attribute:
+                key: use_case
+                values:
+                  - Rides.CreateRide
+                  - Rides.TransitionRide
+                  - Rides.GetRide
+                  - Rides.ListRides
+            - name: ride-latency
+              type: latency
+              latency:
+                threshold_ms: 300
+
+      - name: keep-settlement-slo-breaches
+        type: and
+        and:
+          sub_policies:
+            - name: is-settlement
+              type: string_attribute
+              string_attribute:
+                key: use_case
+                values:
+                  - Payments.InitiateSettlement
+            - name: settlement-latency
+              type: latency
+              latency:
+                threshold_ms: 500
+
+      - name: keep-terminal-ride-transitions
+        type: string_attribute
+        string_attribute:
+          key: use_case
+          values:
+            - Rides.TransitionRide
+
+      - name: keep-financial-integrity-violations
+        type: string_attribute
+        string_attribute:
+          key: error_type
+          values:
+            - PAYMENT_ANTI_DUPLICATION
+            - PAYMENT_POLICY_VIOLATION
+
+      - name: keep-routine-sample
+        type: probabilistic
+        probabilistic:
+          sampling_percentage: 10
+
+exporters:
+  prometheus:
+    endpoint: 0.0.0.0:8889
+
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+
+  debug:
+    verbosity: basic
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+  zpages:
+    endpoint: 0.0.0.0:55679
+
+service:
+  extensions: [health_check, zpages]
+
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, tail_sampling, batch]
+      exporters: [otlp/tempo, debug]
+
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource]
+      exporters: [prometheus, debug]
+
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource]
+      exporters: [debug]

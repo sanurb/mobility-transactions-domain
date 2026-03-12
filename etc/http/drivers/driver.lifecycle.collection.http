@@ -1,0 +1,190 @@
+@baseUrl = http://localhost:3000
+@api = {{baseUrl}}/api/v1
+@json = application/json
+@token = {{token}}
+
+# Driver Lifecycle Collection
+# Covers UAT tests: 1. Register Driver and Set Availability
+#                   2. Publish Location Updates with Quality Metadata
+#                   3. Reject Location Updates with Bad Quality Data
+#
+# State machine: OFFLINE ←→ AVAILABLE ←→ BUSY
+# Authorization: DRIVER_WRITE scope required for writes, DRIVER_READ for reads
+
+###
+### ─────────────────────────────────────────────────────────────────────────────
+### REGISTRATION
+### ─────────────────────────────────────────────────────────────────────────────
+
+###
+### [Drivers] Register new driver
+### Returns 201 with driver in OFFLINE state
+# @name drivers_register_ok
+POST {{api}}/drivers/register
+Accept: {{json}}
+Content-Type: {{json}}
+Authorization: Bearer {{token}}
+request-id: {{$guid}}
+idempotency-key: {{$guid}}
+
+{}
+
+###
+### Capture driverId from registration
+@driverId = {{drivers_register_ok.response.body.$.id}}
+
+###
+### [Drivers] Get driver by ID
+# @name drivers_get_ok
+GET {{api}}/drivers/{{driverId}}
+Accept: {{json}}
+Authorization: Bearer {{token}}
+request-id: {{$guid}}
+
+###
+### ─────────────────────────────────────────────────────────────────────────────
+### AVAILABILITY STATE MACHINE
+### ─────────────────────────────────────────────────────────────────────────────
+
+###
+### [Drivers] Set availability to AVAILABLE (valid: OFFLINE → AVAILABLE)
+# @name drivers_availability_available_ok
+PUT {{api}}/drivers/{{driverId}}/availability
+Accept: {{json}}
+Content-Type: {{json}}
+Authorization: Bearer {{token}}
+request-id: {{$guid}}
+idempotency-key: {{$guid}}
+
+{
+  "state": "AVAILABLE"
+}
+
+###
+### [Drivers] Set availability to BUSY (valid: AVAILABLE → BUSY)
+# @name drivers_availability_busy_ok
+PUT {{api}}/drivers/{{driverId}}/availability
+Accept: {{json}}
+Content-Type: {{json}}
+Authorization: Bearer {{token}}
+request-id: {{$guid}}
+idempotency-key: {{$guid}}
+
+{
+  "state": "BUSY"
+}
+
+###
+### [Drivers] Set availability back to OFFLINE (valid: BUSY → OFFLINE)
+# @name drivers_availability_offline_ok
+PUT {{api}}/drivers/{{driverId}}/availability
+Accept: {{json}}
+Content-Type: {{json}}
+Authorization: Bearer {{token}}
+request-id: {{$guid}}
+idempotency-key: {{$guid}}
+
+{
+  "state": "OFFLINE"
+}
+
+###
+### [Drivers] Invalid transition: OFFLINE → BUSY (must return STATE_CONFLICT)
+### Expected: 409 with errorType=STATE_CONFLICT, currentState=OFFLINE
+# @name drivers_availability_stateConflict
+PUT {{api}}/drivers/{{driverId}}/availability
+Accept: {{json}}
+Content-Type: {{json}}
+Authorization: Bearer {{token}}
+request-id: {{$guid}}
+idempotency-key: {{$guid}}
+
+{
+  "state": "BUSY"
+}
+
+###
+### ─────────────────────────────────────────────────────────────────────────────
+### LOCATION UPDATES
+### ─────────────────────────────────────────────────────────────────────────────
+
+###
+### [Drivers] Update location with quality metadata
+### Includes: latitude, longitude, accuracyMeters, bearingDegrees, speedMps, recordedAt
+# @name drivers_location_ok
+PUT {{api}}/drivers/{{driverId}}/location
+Accept: {{json}}
+Content-Type: {{json}}
+Authorization: Bearer {{token}}
+request-id: {{$guid}}
+idempotency-key: {{$guid}}
+
+<@ ./driver.fixtures/location.valid.json
+
+###
+### [Drivers] Invalid location metadata (negative accuracy)
+### Expected: 400 VALIDATION_ERROR
+# @name drivers_location_invalidAccuracy
+PUT {{api}}/drivers/{{driverId}}/location
+Accept: {{json}}
+Content-Type: {{json}}
+Authorization: Bearer {{token}}
+request-id: {{$guid}}
+idempotency-key: {{$guid}}
+
+{
+  "latitude": 4.710989,
+  "longitude": -74.072092,
+  "accuracy": -5,
+  "bearing": 90,
+  "speed": 10,
+  "recordedAt": "{{$datetime iso8601}}"
+}
+
+###
+### [Drivers] Invalid location metadata (bearing > 360)
+### Expected: 400 VALIDATION_ERROR
+# @name drivers_location_invalidBearing
+PUT {{api}}/drivers/{{driverId}}/location
+Accept: {{json}}
+Content-Type: {{json}}
+Authorization: Bearer {{token}}
+request-id: {{$guid}}
+idempotency-key: {{$guid}}
+
+{
+  "latitude": 4.710989,
+  "longitude": -74.072092,
+  "accuracy": 10,
+  "bearing": 400,
+  "speed": 10,
+  "recordedAt": "{{$datetime iso8601}}"
+}
+
+###
+### [Drivers] Invalid location metadata (negative speed)
+### Expected: 400 VALIDATION_ERROR
+# @name drivers_location_invalidSpeed
+PUT {{api}}/drivers/{{driverId}}/location
+Accept: {{json}}
+Content-Type: {{json}}
+Authorization: Bearer {{token}}
+request-id: {{$guid}}
+idempotency-key: {{$guid}}
+
+{
+  "latitude": 4.710989,
+  "longitude": -74.072092,
+  "accuracy": 10,
+  "bearing": 90,
+  "speed": -5,
+  "recordedAt": "{{$datetime iso8601}}"
+}
+
+###
+### [Drivers] Verify location was updated
+# @name drivers_get_afterLocation
+GET {{api}}/drivers/{{driverId}}
+Accept: {{json}}
+Authorization: Bearer {{token}}
+request-id: {{$guid}}

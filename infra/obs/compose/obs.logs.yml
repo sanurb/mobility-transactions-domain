@@ -1,0 +1,58 @@
+services:
+  fluent-bit:
+    image: cr.fluentbit.io/fluent/fluent-bit:4.2.2
+    container_name: obs-fluent-bit
+    networks: [obs]
+    restart: unless-stopped
+
+    depends_on:
+      loki:
+        condition: service_healthy
+
+    volumes:
+      - ./infra/obs/fluent-bit/fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf:ro
+      - ./infra/obs/fluent-bit/parsers.conf:/fluent-bit/etc/parsers.conf:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - fluentbit_state:/fluent-bit/state
+
+    command: ["/fluent-bit/bin/fluent-bit", "-c", "/fluent-bit/etc/fluent-bit.conf"]
+
+    ports:
+      - "127.0.0.1:2020:2020"
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:2020/api/v1/metrics | grep fluentbit_uptime || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  loki:
+    image: grafana/loki:3.3.2
+    container_name: obs-loki
+    networks: [obs]
+    restart: unless-stopped
+
+    expose:
+      - "3100"
+
+    ports:
+      - "127.0.0.1:3100:3100"
+
+    volumes:
+      - ./infra/obs/loki/config.yml:/etc/loki/config.yml:ro
+      - obs_loki_data:/loki
+
+    command: ["-config.file=/etc/loki/config.yml"]
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3100/ready >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+volumes:
+  obs_loki_data:
+  fluentbit_state:
+  

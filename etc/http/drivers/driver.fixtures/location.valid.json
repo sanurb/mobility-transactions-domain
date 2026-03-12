@@ -1,0 +1,8 @@
+{
+  "latitude": 4.710989,
+  "longitude": -74.072092,
+  "accuracy": 10,
+  "bearing": 90,
+  "speed": 15.5,
+  "recordedAt": "{{$datetime iso8601}}"
+}

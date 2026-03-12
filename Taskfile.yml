@@ -1,0 +1,622 @@
+version: "3"
+
+dotenv:
+  - ".env"
+
+env:
+  NODE_ENV: '{{ default "development" .NODE_ENV }}'
+
+# ──────────────────────────────────────────────────────────────────────
+# Global variables
+vars:
+  # Project / output
+  DIST_DIR: "dist"
+
+  # Infra containers
+  PG_CONTAINER: "mobility-postgres"
+
+  # API endpoints (host-run, not inside docker network)
+  API_HOST: '{{ default "127.0.0.1" .API_HOST }}'
+  API_PORT: '{{ default "3000" .API_PORT }}'
+  API_BASE: "http://{{.API_HOST}}:{{.API_PORT}}"
+  API_HEALTH_PATH: '{{ default "/api/v1/health" .API_HEALTH_PATH }}'
+  API_METRICS_PATH: '{{ default "/metrics" .API_METRICS_PATH }}'
+
+  # Observability (optional; set PROM_HOST/PORT, GRAFANA_HOST/PORT or keep defaults)
+  PROM_HOST: '{{ default "127.0.0.1" .PROM_HOST }}'
+  PROM_PORT: '{{ default "9090" .PROM_PORT }}'
+  MIMIR_HOST: '{{ default "127.0.0.1" .MIMIR_HOST }}'
+  MIMIR_PORT: '{{ default "9009" .MIMIR_PORT }}'
+  GRAFANA_HOST: '{{ default "127.0.0.1" .GRAFANA_HOST }}'
+  GRAFANA_PORT: '{{ default "3001" .GRAFANA_PORT }}'
+  TEMPO_HOST: '{{ default "127.0.0.1" .TEMPO_HOST }}'
+  TEMPO_PORT: '{{ default "3200" .TEMPO_PORT }}'
+  LOKI_HOST: '{{ default "127.0.0.1" .LOKI_HOST }}'
+  LOKI_PORT: '{{ default "3100" .LOKI_PORT }}'
+  COLLECTOR_HEALTH: '{{ default "http://127.0.0.1:13133" .COLLECTOR_HEALTH }}'
+  OBS_PROFILE: '{{ default "core" .OBS_PROFILE }}'
+
+  # Git metadata (useful for docker labels / debugging)
+  GIT_COMMIT:
+    sh: "git rev-parse --short HEAD"
+
+set: ["pipefail"]
+shopt: ["globstar"]
+output: prefixed
+
+# ──────────────────────────────────────────────────────────────────────
+tasks:
+  help:
+    desc: "Show all available tasks"
+    cmds:
+      - task --list
+
+  # ────────────────────────────────────────────────────────────────────
+  # Preconditions
+  # ────────────────────────────────────────────────────────────────────
+  requirements:
+    desc: "Verify required tools exist"
+    silent: true
+    preconditions:
+      - sh: "command -v docker"
+        msg: "❌ docker is not installed"
+      - sh: "command -v pnpm"
+        msg: "❌ pnpm is not installed"
+      - sh: "command -v node"
+        msg: "❌ node is not installed"
+      - sh: "command -v curl"
+        msg: "❌ curl is not installed"
+    cmds:
+      - echo "✅ requirements OK"
+
+  # ────────────────────────────────────────────────────────────────────
+  # Package lifecycle
+  # ────────────────────────────────────────────────────────────────────
+  install:
+    desc: "Install dependencies (pnpm)"
+    deps: [requirements]
+    cmds:
+      - echo "📦 Installing dependencies..."
+      - pnpm install
+
+  dev:
+    desc: "Run development server (watch)"
+    deps: [install]
+    cmds:
+      - echo "🚀 Starting dev server..."
+      - pnpm run dev
+
+  check:
+    desc: "Static checks (ultracite check)"
+    deps: [install]
+    cmds:
+      - echo "🧹 Running checks..."
+      - pnpm run check
+
+  fix:
+    desc: "Auto-fix formatting/lint (ultracite fix)"
+    deps: [install]
+    cmds:
+      - echo "🧹 Fixing issues..."
+      - pnpm run fix
+
+  test:
+    desc: "Run tests (vitest)"
+    deps: [install]
+    cmds:
+      - echo "🧪 Running tests..."
+      - pnpm run test
+
+  test:coverage:
+    desc: "Run tests with coverage"
+    deps: [install]
+    cmds:
+      - echo "🧪 Running coverage..."
+      - pnpm run test:coverage
+
+  dbctl:
+    desc: "Run dbctl with arguments (e.g. task dbctl -- seed:status)"
+    cmds:
+      - pnpm dbctl {{.CLI_ARGS}}
+
+  seed:
+    desc: "Seed database with development data (idempotent, Umzug-managed)"
+    cmds:
+      - pnpm dbctl seed:apply
+
+  seed:replay:
+    desc: "Re-run all seeds to verify idempotency"
+    cmds:
+      - pnpm dbctl seed:apply --replay
+
+  seed:verify:
+    desc: "Check seed integrity hashes for drift (read-only)"
+    cmds:
+      - pnpm dbctl seed:verify
+
+  qa:
+    desc: "Run CI-like quality gates (check + test)"
+    deps: [check, test]
+
+  # ────────────────────────────────────────────────────────────────────
+  # Infra lifecycle
+  # ────────────────────────────────────────────────────────────────────
+  start:
+    desc: "Start infra and wait until ready"
+    deps: [requirements]
+    cmds:
+      - echo "🐳 Starting infra..."
+      - docker compose up -d --build
+      - task ping:postgres
+
+  stop:
+    desc: "Stop infra (docker compose stop)"
+    deps: [requirements]
+    cmds:
+      - docker compose stop
+
+  destroy:
+    desc: "Destroy infra (docker compose down)"
+    deps: [requirements]
+    cmds:
+      - docker compose down
+
+  rebuild:
+    desc: "Rebuild infra from scratch (pull + no cache) then start"
+    deps: [requirements]
+    cmds:
+      - echo "🐳 Rebuilding infra..."
+      - docker compose build --pull --no-cache
+      - task start
+
+  # ────────────────────────────────────────────────────────────────────
+  # Pings / readines
+  # ────────────────────────────────────────────────────────────────────
+  ping:postgres:
+    desc: "Wait until Postgres accepts connections"
+    deps: [requirements]
+    cmds:
+      - |
+        set -e
+        echo "⏳ Waiting for Postgres container={{.PG_CONTAINER}} ..."
+        for i in $(seq 1 60); do
+          if docker exec {{.PG_CONTAINER}} pg_isready -h 127.0.0.1 -U mobility -d mobility_transactions >/dev/null 2>&1; then
+            echo "✅ Postgres ready"
+            exit 0
+          fi
+          sleep 1
+        done
+        echo "❌ Postgres not ready"
+        docker logs {{.PG_CONTAINER}} --tail 200 || true
+        exit 1
+
+  ping:api:
+    desc: "Ping API health endpoint (expects 2xx)"
+    deps: [requirements]
+    cmds:
+      - curl -fsS "{{.API_BASE}}{{.API_HEALTH_PATH}}" >/dev/null
+      - echo "✅ API healthy ({{.API_BASE}}{{.API_HEALTH_PATH}})"
+
+  ping:metrics:
+    desc: "Ping API metrics endpoint (expects 2xx) — for Prometheus scraping"
+    deps: [requirements]
+    cmds:
+      - curl -fsS "{{.API_BASE}}{{.API_METRICS_PATH}}" >/dev/null
+      - echo "✅ API metrics reachable ({{.API_BASE}}{{.API_METRICS_PATH}})"
+
+  ping:prom:
+    desc: "Ping Prometheus readiness (/-/ready)"
+    deps: [requirements]
+    cmds:
+      - curl -fsS "http://{{.PROM_HOST}}:{{.PROM_PORT}}/-/ready" >/dev/null
+      - echo "✅ Prometheus ready ({{.PROM_HOST}}:{{.PROM_PORT}})"
+
+  ping:grafana:
+    desc: "Ping Grafana health (/api/health)"
+    deps: [requirements]
+    cmds:
+      - curl -fsS "http://{{.GRAFANA_HOST}}:{{.GRAFANA_PORT}}/api/health" >/dev/null
+      - echo "✅ Grafana ready ({{.GRAFANA_HOST}}:{{.GRAFANA_PORT}})"
+
+  ping:
+    desc: "Ping everything important (postgres + api + metrics)"
+    deps: [ping:postgres, ping:api, ping:metrics]
+
+  # ────────────────────────────────────────────────────────────────────
+  # Observability stack lifecycle
+  # ────────────────────────────────────────────────────────────────────
+  obs:start:
+    desc: "Start observability stack with profile (OBS_PROFILE=core|traces|logs|full)"
+    deps: [requirements]
+    cmds:
+      - |
+        set -e
+        echo "🔭 Starting observability stack (profile={{.OBS_PROFILE}})..."
+
+        # Determine which overlays to use based on profile
+        case "{{.OBS_PROFILE}}" in
+          core)
+            export COLLECTOR_CONFIG=core.yaml
+            docker compose -f docker-compose.yml \
+              -f infra/obs/compose/obs.base.yml \
+              -f infra/obs/compose/obs.dev.yml \
+              up -d --build
+            ;;
+          traces)
+            export COLLECTOR_CONFIG=traces.yaml
+            docker compose -f docker-compose.yml \
+              -f infra/obs/compose/obs.base.yml \
+              -f infra/obs/compose/obs.dev.yml \
+              -f infra/obs/compose/obs.traces.yml \
+              up -d --build
+            ;;
+          logs)
+            export COLLECTOR_CONFIG=logs.yaml
+            docker compose -f docker-compose.yml \
+              -f infra/obs/compose/obs.base.yml \
+              -f infra/obs/compose/obs.dev.yml \
+              -f infra/obs/compose/obs.logs.yml \
+              -f infra/obs/compose/obs.fluentbit.yml \
+              up -d --build
+            ;;
+          full)
+            export COLLECTOR_CONFIG=full.yaml
+            docker compose -f docker-compose.yml \
+              -f infra/obs/compose/obs.base.yml \
+              -f infra/obs/compose/obs.dev.yml \
+              -f infra/obs/compose/obs.traces.yml \
+              -f infra/obs/compose/obs.logs.yml \
+              -f infra/obs/compose/obs.fluentbit.yml \
+              up -d --build
+            ;;
+          *)
+            echo "❌ Invalid OBS_PROFILE: {{.OBS_PROFILE}}"
+            echo "Valid options: core, traces, logs, full"
+            exit 1
+            ;;
+        esac
+
+        echo "✅ Observability stack started with profile={{.OBS_PROFILE}}"
+
+  obs:stop:
+    desc: "Stop all observability services"
+    deps: [requirements]
+    cmds:
+      - |
+        echo "🛑 Stopping observability stack..."
+        docker compose -f docker-compose.yml \
+          -f infra/obs/compose/obs.base.yml \
+          -f infra/obs/compose/obs.dev.yml \
+          -f infra/obs/compose/obs.traces.yml \
+          -f infra/obs/compose/obs.logs.yml \
+          -f infra/obs/compose/obs.fluentbit.yml \
+          stop
+
+  obs:destroy:
+    desc: "Destroy observability stack and remove volumes"
+    deps: [requirements]
+    cmds:
+      - |
+        echo "💥 Destroying observability stack..."
+        docker compose -f docker-compose.yml \
+          -f infra/obs/compose/obs.base.yml \
+          -f infra/obs/compose/obs.dev.yml \
+          -f infra/obs/compose/obs.traces.yml \
+          -f infra/obs/compose/obs.logs.yml \
+          -f infra/obs/compose/obs.fluentbit.yml \
+          down -v
+
+  obs:status:
+    desc: "Show status of observability services"
+    deps: [requirements]
+    cmds:
+      - |
+        docker compose -f docker-compose.yml \
+          -f infra/obs/compose/obs.base.yml \
+          -f infra/obs/compose/obs.dev.yml \
+          -f infra/obs/compose/obs.traces.yml \
+          -f infra/obs/compose/obs.logs.yml \
+          -f infra/obs/compose/obs.fluentbit.yml \
+          ps
+
+  obs:logs:
+    desc: "Tail OpenTelemetry Collector logs"
+    deps: [requirements]
+    cmds:
+      - docker logs -f obs-otel-collector
+
+  obs:config:
+    desc: "Show current observability stack docker compose config"
+    deps: [requirements]
+    cmds:
+      - |
+        echo "🔧 Current config for profile={{.OBS_PROFILE}}:"
+        case "{{.OBS_PROFILE}}" in
+          core)
+            docker compose -f docker-compose.yml \
+              -f infra/obs/compose/obs.base.yml \
+              -f infra/obs/compose/obs.dev.yml \
+              config
+            ;;
+          traces)
+            docker compose -f docker-compose.yml \
+              -f infra/obs/compose/obs.base.yml \
+              -f infra/obs/compose/obs.dev.yml \
+              -f infra/obs/compose/obs.traces.yml \
+              config
+            ;;
+          logs)
+            docker compose -f docker-compose.yml \
+              -f infra/obs/compose/obs.base.yml \
+              -f infra/obs/compose/obs.dev.yml \
+              -f infra/obs/compose/obs.logs.yml \
+              -f infra/obs/compose/obs.fluentbit.yml \
+              config
+            ;;
+          full)
+            docker compose -f docker-compose.yml \
+              -f infra/obs/compose/obs.base.yml \
+              -f infra/obs/compose/obs.dev.yml \
+              -f infra/obs/compose/obs.traces.yml \
+              -f infra/obs/compose/obs.logs.yml \
+              -f infra/obs/compose/obs.fluentbit.yml \
+              config
+            ;;
+          *)
+            echo "❌ Invalid OBS_PROFILE: {{.OBS_PROFILE}}"
+            exit 1
+            ;;
+        esac
+
+  obs:urls:
+    desc: "Print observability stack URLs for current profile"
+    cmds:
+      - |
+        echo "🔗 Observability URLs (profile={{.OBS_PROFILE}}):"
+        echo ""
+        echo "Prometheus:        http://{{.PROM_HOST}}:{{.PROM_PORT}}"
+        echo "Mimir:             http://{{.MIMIR_HOST}}:{{.MIMIR_PORT}}/ready"
+        echo "Grafana:           http://{{.GRAFANA_HOST}}:{{.GRAFANA_PORT}}"
+        echo "Collector Health:  {{.COLLECTOR_HEALTH}}"
+        echo "Collector Zpages:  http://127.0.0.1:55679/debug/servicez"
+        echo ""
+
+        case "{{.OBS_PROFILE}}" in
+          traces|full)
+            echo "Tempo API:         http://{{.TEMPO_HOST}}:{{.TEMPO_PORT}}/ready"
+            ;;
+        esac
+
+        case "{{.OBS_PROFILE}}" in
+          logs|full)
+            echo "Loki:              http://{{.LOKI_HOST}}:{{.LOKI_PORT}}/ready"
+            ;;
+        esac
+
+  obs:doctor:
+    desc: "Diagnostic check for observability stack health"
+    deps: [requirements]
+    cmds:
+      - |
+        set -e
+        echo "🩺 Running observability diagnostics..."
+        echo ""
+
+        # Check collector health
+        if curl -fsS "{{.COLLECTOR_HEALTH}}" >/dev/null 2>&1; then
+          echo "✅ Collector health endpoint OK"
+        else
+          echo "❌ Collector health endpoint failed"
+          exit 1
+        fi
+
+        # Check Prometheus
+        if curl -fsS "http://{{.PROM_HOST}}:{{.PROM_PORT}}/-/ready" >/dev/null 2>&1; then
+          echo "✅ Prometheus ready"
+        else
+          echo "❌ Prometheus not ready"
+          exit 1
+        fi
+
+        # Check Mimir
+        if curl -fsS "http://{{.MIMIR_HOST}}:{{.MIMIR_PORT}}/ready" >/dev/null 2>&1; then
+          echo "✅ Mimir ready"
+        else
+          echo "❌ Mimir not ready"
+          exit 1
+        fi
+
+        # Check Grafana
+        if curl -fsS "http://{{.GRAFANA_HOST}}:{{.GRAFANA_PORT}}/api/health" >/dev/null 2>&1; then
+          echo "✅ Grafana healthy"
+        else
+          echo "❌ Grafana not healthy"
+          exit 1
+        fi
+
+        # Profile-specific checks
+        case "{{.OBS_PROFILE}}" in
+          traces|full)
+            if curl -fsS "http://{{.TEMPO_HOST}}:{{.TEMPO_PORT}}/ready" >/dev/null 2>&1; then
+              echo "✅ Tempo API accessible"
+            else
+              echo "❌ Tempo API not accessible"
+              exit 1
+            fi
+            ;;
+        esac
+
+        case "{{.OBS_PROFILE}}" in
+          logs|full)
+            if curl -fsS "http://{{.LOKI_HOST}}:{{.LOKI_PORT}}/ready" >/dev/null 2>&1; then
+              echo "✅ Loki ready"
+            else
+              echo "❌ Loki not ready"
+              exit 1
+            fi
+            ;;
+        esac
+
+        echo ""
+        echo "✅ All diagnostics passed"
+
+  obs:grafana:check:
+    desc: "Verify Grafana provisioning (datasources and dashboards)"
+    deps: [requirements]
+    cmds:
+      - |
+        set -e
+        echo "🔍 Verifying Grafana provisioning..."
+        echo ""
+
+        # Wait for Grafana health
+        MAX_WAIT=30
+        for i in $(seq 1 $MAX_WAIT); do
+          if curl -fsS "http://{{.GRAFANA_HOST}}:{{.GRAFANA_PORT}}/api/health" >/dev/null 2>&1; then
+            echo "✅ Grafana health OK"
+            break
+          fi
+          if [ $i -eq $MAX_WAIT ]; then
+            echo "❌ Grafana health check timeout"
+            exit 1
+          fi
+          sleep 1
+        done
+
+        # Check datasources (anonymous admin enabled in dev)
+        echo ""
+        echo "🔌 Checking datasources..."
+        DATASOURCES=$(curl -fsS "http://{{.GRAFANA_HOST}}:{{.GRAFANA_PORT}}/api/datasources" | python3 -c "
+        import sys, json
+        data = json.load(sys.stdin)
+        for ds in data:
+          print(f\"{ds['uid']}:{ds['name']}:{ds['type']}\")
+        ")
+
+        echo "$DATASOURCES"
+
+        # Verify prom datasource exists and is default
+        if echo "$DATASOURCES" | grep -q "^prom:Prometheus:prometheus$"; then
+          echo "✅ Prometheus datasource provisioned (uid=prom)"
+        else
+          echo "❌ Prometheus datasource missing or misconfigured"
+          exit 1
+        fi
+
+        # Check for Tempo and Loki (may be unreachable, just verify provisioned)
+        if echo "$DATASOURCES" | grep -q "^tempo:Tempo:tempo$"; then
+          echo "✅ Tempo datasource provisioned"
+        else
+          echo "⚠️  Tempo datasource not found (expected in traces/full profiles)"
+        fi
+
+        if echo "$DATASOURCES" | grep -q "loki"; then
+          echo "✅ Loki datasource provisioned"
+        else
+          echo "⚠️  Loki datasource not found (expected in logs/full profiles)"
+        fi
+
+        # Check dashboards
+        echo ""
+        echo "📊 Checking dashboards..."
+        DASHBOARDS=$(curl -fsS "http://{{.GRAFANA_HOST}}:{{.GRAFANA_PORT}}/api/search?query=Mobility" | python3 -c "
+        import sys, json
+        data = json.load(sys.stdin)
+        for d in data:
+          if d.get('type') == 'dash-db':
+            print(f\"{d['uid']}:{d['title']}\")
+        ")
+
+        if [ -z "$DASHBOARDS" ]; then
+          echo "❌ No dashboards found in Mobility folder"
+          exit 1
+        fi
+
+        echo "$DASHBOARDS"
+
+        EXPECTED_DASHBOARDS="ride-lifecycle fare-determinism payments-integrity dependency-health"
+        for uid in $EXPECTED_DASHBOARDS; do
+          if echo "$DASHBOARDS" | grep -q "^$uid:"; then
+            echo "✅ Dashboard $uid provisioned"
+          else
+            echo "❌ Dashboard $uid missing"
+            exit 1
+          fi
+        done
+
+        echo ""
+        echo "✅ Grafana provisioning verified"
+
+  obs:check:
+    desc: "Verify observability stack readiness and configuration"
+    deps: [obs:doctor, obs:grafana:check]
+    cmds:
+      - |
+        set -e
+        echo ""
+        echo "🔍 Verifying Prometheus scrape targets..."
+
+        # Query Prometheus targets API
+        TARGETS=$(curl -fsS "http://{{.PROM_HOST}}:{{.PROM_PORT}}/api/v1/targets" | python3 -c "
+        import sys, json
+        data = json.load(sys.stdin)
+        targets = data.get('data', {}).get('activeTargets', [])
+        for t in targets:
+          print(f\"{t['labels']['job']}:{t['scrapeUrl']}\")
+        ")
+
+        echo "$TARGETS"
+
+        # Verify only otel-collector is scraped
+        if echo "$TARGETS" | grep -q "otel-collector.*:8889"; then
+          echo "✅ Prometheus scrapes otel-collector:8889"
+        else
+          echo "❌ Prometheus does not scrape otel-collector:8889"
+          exit 1
+        fi
+
+        # Ensure no direct app scraping
+        if echo "$TARGETS" | grep -qv "otel-collector"; then
+          echo "❌ Prometheus scrapes non-collector targets (violates collector-first topology)"
+          exit 1
+        fi
+
+        echo "✅ Collector-first topology verified"
+
+  obs:smoke:
+    desc: "Run telemetry generator and verify Prometheus receives metrics"
+    deps: [requirements]
+    cmds:
+      - |
+        set -e
+        echo "🧪 Running smoke test with telemetry generator..."
+
+        # Generate metrics via collector
+        docker compose -f docker-compose.yml \
+          -f infra/obs/compose/obs.base.yml \
+          -f infra/obs/compose/obs.dev.yml \
+          -f infra/obs/compose/obs.tools.yml \
+          run --rm telemetrygen metrics \
+          --otlp-endpoint=otel-collector:4317 \
+          --otlp-insecure \
+          --duration=5s \
+          --rate=10
+
+        echo "⏳ Waiting for metrics to be scraped..."
+        sleep 10
+
+        # Verify Prometheus received metrics
+        METRICS=$(curl -fsS "http://{{.PROM_HOST}}:{{.PROM_PORT}}/api/v1/label/__name__/values" | python3 -c "
+        import sys, json
+        data = json.load(sys.stdin)
+        metrics = data.get('data', [])
+        gen_metrics = [m for m in metrics if 'gen' in m.lower()]
+        print(len(gen_metrics))
+        ")
+
+        if [ "$METRICS" -gt 0 ]; then
+          echo "✅ Smoke test passed: Prometheus received generated metrics"
+        else
+          echo "❌ Smoke test failed: No generated metrics in Prometheus"
+          exit 1
+        fi

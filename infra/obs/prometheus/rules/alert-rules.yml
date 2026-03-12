@@ -1,0 +1,96 @@
+groups:
+  - name: recording_rules
+    interval: 15s
+    rules:
+      # PRD SLO metric: p95 latency by use case
+      - record: mobility:usecase:p95_ms
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le, use_case) (
+              rate(mobility_usecase_duration_ms_bucket[5m])
+            )
+          )
+
+      # PRD metric: error rate by use case
+      - record: mobility:usecase:error_rate_5m
+        expr: |
+          sum by (use_case) (rate(mobility_usecase_requests_total{outcome="error"}[5m]))
+          /
+          sum by (use_case) (rate(mobility_usecase_requests_total[5m]))
+
+  - name: alerts
+    interval: 15s
+    rules:
+      # PRD SLO: Ride completion p95 < 300ms
+      - alert: RideCompletionP95High
+        expr: mobility:usecase:p95_ms{use_case="Rides.CompleteRide"} > 300
+        for: 5m
+        labels:
+          severity: warning
+          slo: rides-complete-p95
+        annotations:
+          summary: "Ride completion p95 latency above SLO threshold"
+          description: "Ride completion p95 is {{ $value }}ms (threshold: 300ms)"
+
+      # PRD SLO: Settlement initiation p95 < 500ms
+      - alert: SettlementInitiationP95High
+        expr: mobility:usecase:p95_ms{use_case="Payments.InitiateSettlement"} > 500
+        for: 5m
+        labels:
+          severity: warning
+          slo: payments-initiate-settlement-p95
+        annotations:
+          summary: "Settlement initiation p95 latency above SLO threshold"
+          description: "Settlement initiation p95 is {{ $value }}ms (threshold: 500ms)"
+
+      # PRD metric: Generic error rate threshold
+      - alert: UseCaseErrorRateHigh
+        expr: max by (use_case) (mobility:usecase:error_rate_5m) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Use case error rate above 5%"
+          description: "Use case {{ $labels.use_case }} error rate is {{ $value | humanizePercentage }}"
+
+      # PRD invariant: Payment anti-duplication must never trigger
+      - alert: PaymentAntiDuplicationTriggered
+        expr: |
+          sum(rate(mobility_usecase_requests_total{
+            use_case="Payments.InitiateSettlement",
+            outcome="error",
+            error_type="PAYMENT_ANTI_DUPLICATION"
+          }[5m])) > 0
+        for: 1m
+        labels:
+          severity: critical
+          invariant: payment-anti-duplication
+        annotations:
+          summary: "Payment anti-duplication invariant violated"
+          description: "Payment anti-duplication errors detected ({{ $value }}/s). This indicates duplicate settlement attempts."
+
+      # PRD invariant: Ride state conflicts should be rare
+      - alert: RideStateConflictSpike
+        expr: |
+          sum(rate(mobility_usecase_requests_total{
+            use_case="Rides.TransitionRide",
+            outcome="error",
+            error_type="STATE_CONFLICT"
+          }[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+          invariant: ride-state-consistency
+        annotations:
+          summary: "Ride state conflict rate elevated"
+          description: "Ride state conflicts at {{ $value }}/s (threshold: 1/s). Check for concurrent transition attempts."
+
+      # Infrastructure: Collector availability
+      - alert: CollectorDown
+        expr: up{job="otel-collector"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "OpenTelemetry Collector is down"
+          description: "Collector has been down for more than 1 minute. No telemetry data is being collected."

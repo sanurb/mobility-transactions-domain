@@ -1,0 +1,201 @@
+name: obs-local
+
+networks:
+  obs:
+    name: obs-local
+    driver: bridge
+
+volumes:
+  obs_prometheus_data:
+  obs_grafana_data:
+  obs_loki_data:
+  obs_mimir_data:
+
+x-logging: &logging
+  logging:
+    driver: "json-file"
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+x-security-defaults: &security_defaults
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.145.0
+    container_name: obs-otel-collector
+    networks: [obs]
+    <<: [*logging, *security_defaults]
+    restart: unless-stopped
+
+    # Do NOT publish ports here. obs.dev.yml handles localhost binds.
+    expose:
+      - "4317"   # OTLP gRPC
+      - "4318"   # OTLP HTTP
+      - "13133"  # health_check
+      - "8889"   # prometheus exporter
+      - "55679"  # zpages
+
+    environment:
+      # Taskfile sets this based on OBS_PROFILE.
+      COLLECTOR_CONFIG: ${COLLECTOR_CONFIG:-core.yaml}
+
+    # Mount directory (not a single file) to keep file selection deterministic and simple.
+    volumes:
+    - ./infra/obs/otelcol/configs/core.yaml:/etc/otelcol/config.yaml:ro
+
+    entrypoint: ["/otelcol-contrib"]
+    command:
+    - "--config=/etc/otelcol/config.yaml"
+
+    # Collector is safe to run read-only (config-only + memory state).
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+
+    healthcheck:
+      # Collector image is distroless (no /bin/sh or wget); keep check shell-free.
+      test: ["CMD", "/otelcol-contrib", "--version"]
+      interval: 5s
+      timeout: 2s
+      retries: 30
+      start_period: 5s
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: obs-prometheus
+    networks: [obs]
+    <<: [*logging, *security_defaults]
+    restart: unless-stopped
+
+    expose:
+      - "9090"
+
+    volumes:
+      - ./infra/obs/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/obs/prometheus/rules:/etc/prometheus/rules:ro
+      - obs_prometheus_data:/prometheus
+
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=${OBS_PROM_RETENTION:-12h}"
+      - "--web.enable-lifecycle"
+
+    depends_on:
+      otel-collector:
+        condition: service_started
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/ready >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 2s
+      retries: 30
+      start_period: 5s
+
+  mimir:
+    image: grafana/mimir:2.13.0
+    container_name: obs-mimir
+    networks: [obs]
+    <<: [*logging, *security_defaults]
+    restart: unless-stopped
+
+    expose:
+      - "9009"
+
+    volumes:
+      - ./infra/obs/mimir/config.yml:/etc/mimir/config.yml:ro
+      - obs_mimir_data:/data
+
+    command:
+      - "-config.file=/etc/mimir/config.yml"
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9009/ready >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: obs-grafana
+    networks: [obs]
+    <<: [*logging, *security_defaults]
+    restart: unless-stopped
+
+    expose:
+      - "3000"
+
+    environment:
+      # Defaults overridden in obs.dev.yml (dev-only convenience).
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+
+      # Keep it quiet by default.
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_LOG_LEVEL: ${GRAFANA_LOG_LEVEL:-warn}
+
+    volumes:
+      - obs_grafana_data:/var/lib/grafana
+      - ./infra/obs/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/obs/grafana/dashboards:/var/lib/grafana/dashboards:ro
+
+    depends_on:
+      prometheus:
+        condition: service_started
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+  alertmanager:
+    profiles: ["full"]
+    image: prom/alertmanager:v0.27.0
+    container_name: obs-alertmanager
+    networks: [obs]
+    <<: [*logging, *security_defaults]
+    restart: unless-stopped
+
+    expose:
+      - "9093"
+
+    volumes:
+      - ./infra/obs/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9093/-/ready >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 2s
+      retries: 30
+      start_period: 5s
+
+  alert-sink:
+    profiles: ["full"]
+    image: ealen/echo-server:0.9.2
+    container_name: obs-alert-sink
+    networks: [obs]
+    <<: [*logging, *security_defaults]
+    restart: unless-stopped
+
+    expose:
+      - "80"
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost/ >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 2s
+      retries: 30
+      start_period: 5s

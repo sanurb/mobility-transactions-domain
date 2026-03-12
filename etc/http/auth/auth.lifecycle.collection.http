@@ -1,0 +1,104 @@
+@baseUrl = http://localhost:3000
+@authApi = {{baseUrl}}/api/auth
+@api = {{baseUrl}}/api/v1
+@json = application/json
+@token = {{token}}
+
+# Auth Lifecycle Collection
+# Covers Better Auth email/password: sign-up, sign-in, get-session, sign-out.
+# Session is cookie-based; REST Client remembers cookies for subsequent requests.
+# Use auth_signin_ok then auth_token_ok to obtain a Bearer token for {{token}} in other collections.
+#
+# Endpoints: POST sign-up/email, POST sign-in/email, POST sign-out, GET get-session, GET token (JWT)
+
+###
+### ─────────────────────────────────────────────────────────────────────────────
+### SIGN UP
+### ─────────────────────────────────────────────────────────────────────────────
+
+###
+### [Auth] Sign up with email and password
+### Creates user; session cookie set in response. Min password length 8.
+# @name auth_signup_ok
+POST {{authApi}}/sign-up/email
+Accept: {{json}}
+Content-Type: {{json}}
+request-id: {{$guid}}
+
+<@ ./auth.fixtures/signup.valid.json
+
+###
+### ─────────────────────────────────────────────────────────────────────────────
+### SESSION
+### ─────────────────────────────────────────────────────────────────────────────
+
+###
+### [Auth] Get current session (requires session cookie from sign-in/sign-up)
+# @name auth_getSession_ok
+GET {{authApi}}/get-session
+Accept: {{json}}
+request-id: {{$guid}}
+
+###
+### ─────────────────────────────────────────────────────────────────────────────
+### SIGN OUT
+### ─────────────────────────────────────────────────────────────────────────────
+
+###
+### [Auth] Sign out (invalidates session cookie)
+# @name auth_signout_ok
+POST {{authApi}}/sign-out
+Accept: {{json}}
+request-id: {{$guid}}
+
+###
+### ─────────────────────────────────────────────────────────────────────────────
+### SIGN IN
+### ─────────────────────────────────────────────────────────────────────────────
+
+###
+### [Auth] Sign in with email and password
+### Session cookie set in response for get-session and token.
+# @name auth_signin_ok
+POST {{authApi}}/sign-in/email
+Accept: {{json}}
+Content-Type: {{json}}
+request-id: {{$guid}}
+
+<@ ./auth.fixtures/signin.valid.json
+
+###
+### [Auth] Get session after sign-in
+# @name auth_getSession_afterSignin
+GET {{authApi}}/get-session
+Accept: {{json}}
+request-id: {{$guid}}
+
+###
+### ─────────────────────────────────────────────────────────────────────────────
+### JWT TOKEN (Bearer for API requests)
+### ─────────────────────────────────────────────────────────────────────────────
+
+###
+### [Auth] Get JWT for Authorization: Bearer (requires session cookie)
+### Use this token as {{token}} in driver/ride/payment collections.
+# @name auth_token_ok
+GET {{authApi}}/token
+Accept: {{json}}
+request-id: {{$guid}}
+
+###
+### Capture token for use in other collections (file variable or env)
+@bearerToken = {{auth_token_ok.response.body.$.token}}
+
+###
+### ─────────────────────────────────────────────────────────────────────────────
+### JWKS (public keys for JWT verification)
+### ─────────────────────────────────────────────────────────────────────────────
+
+###
+### [Auth] Get JWKS (public keys)
+# @name auth_jwks_ok
+GET {{authApi}}/jwks
+Accept: {{json}}
+request-id: {{$guid}}

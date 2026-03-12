@@ -1,0 +1,25 @@
+{
+  "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+  "extends": ["ultracite/biome/core"],
+  "files": {
+    "ignoreUnknown": false,
+    "includes": [
+      "!**/docs",
+      "!**/node_modules",
+      "!**/dist",
+      "!**/build",
+      "!**/coverage",
+      "!**/migrations",
+      "!**/mcp",
+      "!**/claude"
+    ]
+  },
+  "linter": {
+    "rules": {
+      "style": {
+        "useFilenamingConvention": "off",
+        "useConsistentTypeDefinitions": "off"
+      }
+    }
+  }
+}

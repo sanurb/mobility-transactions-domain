@@ -1,0 +1,13 @@
+node_modules
+dist
+.coverage
+.vitest
+.git
+.gitignore
+.DS_Store
+.env
+.env.*
+*.log
+docker-compose*.yml
+infra/obs/**/data
+pnpm-store

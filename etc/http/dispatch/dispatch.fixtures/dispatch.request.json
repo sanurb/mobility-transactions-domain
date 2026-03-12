@@ -1,0 +1,8 @@
+{
+  "rideId": "ride-{{$guid}}",
+  "pickupLocation": {
+    "lat": 4.710989,
+    "lng": -74.072092
+  },
+  "searchRadiusMeters": 5000
+}

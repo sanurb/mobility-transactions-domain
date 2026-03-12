@@ -1,0 +1,15 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: "dev-webhook"
+  group_by: ["alertname", "severity"]
+  group_wait: 10s
+  group_interval: 10s
+  repeat_interval: 1h
+
+receivers:
+  - name: "dev-webhook"
+    webhook_configs:
+      - url: "http://alert-sink:80/"
+        send_resolved: true

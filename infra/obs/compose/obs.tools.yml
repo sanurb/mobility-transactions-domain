@@ -1,0 +1,22 @@
+services:
+  telemetrygen:
+    # Tool-only. Never started by obs:start; used via:
+    #   docker compose ... -f infra/obs/compose/obs.tools.yml run --rm telemetrygen <args>
+    #
+    # NOTE: pin this image to a known-good tag for your environment.
+    # If this tag doesn't exist in your registry, adjust it deliberately (do not use "latest" long-term).
+    image: ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.116.0
+    container_name: obs-telemetrygen
+    networks: [obs]
+    restart: "no"
+
+    depends_on:
+      otel-collector:
+        condition: service_healthy
+
+    entrypoint: ["telemetrygen"]
+    command: ["--help"]
+
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m

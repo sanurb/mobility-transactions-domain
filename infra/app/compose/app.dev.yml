@@ -1,0 +1,50 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        NODE_VERSION: "25.6.1"
+    container_name: mobility-api
+    restart: unless-stopped
+    networks: [obs, default]
+
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      # Containerized app must not use localhost for DB; use compose service DNS.
+      DATABASE_URL: ${DOCKER_DATABASE_URL:-postgresql://mobility:mobility_dev_password@postgres:5432/mobility_transactions}
+      # Fail fast before boot if secret is missing; avoids crash loops.
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET is required (min 32 chars)}
+      BETTER_AUTH_URL: ${BETTER_AUTH_URL:-http://localhost:3000}
+
+      # OTel -> collector (compose DNS)
+      OTEL_SERVICE_NAME: mobility-transactions
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+
+    ports:
+      - "127.0.0.1:3000:3000"
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+      otel-collector:
+        condition: service_healthy
+
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+    healthcheck:
+      # Runtime image is slim without wget/curl; use built-in fetch via node.
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/v1/health').then((r)=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+      start_period: 10s

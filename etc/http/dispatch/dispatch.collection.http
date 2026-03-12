@@ -1,0 +1,99 @@
+@baseUrl = {{baseUrl}}
+@api = {{baseUrl}}/api/v1
+@json = application/json
+@token = {{token}}
+# Dispatch Collection
+# Covers UAT tests: 5. Deterministic Nearest-First Dispatch
+#                   6. Exactly-One Driver Assignment (No Double Assignment)
+#                   7. Dispatch Audit Evidence
+#                   8. Concurrent Dispatch Produces Exactly One Winner
+#                   9. Dispatch Requires Correlation ID
+#
+# Authorization: DISPATCH_EXECUTE scope required
+# Idempotency: Requires Idempotency-Key or x-correlation-id header
+
+###
+### ─────────────────────────────────────────────────────────────────────────────
+### DISPATCH OPERATIONS
+### ─────────────────────────────────────────────────────────────────────────────
+
+###
+### [Dispatch] Dispatch ride to nearest available driver
+### Returns: rideId, driverId, candidatesEvaluated, selectionCriteria, correlationId, dispatchedAt
+# @name dispatch_ok
+POST {{api}}/dispatch
+Accept: {{json}}
+Content-Type: {{json}}
+Authorization: Bearer {{token}}
+request-id: {{$guid}}
+Idempotency-Key: {{$guid}}
+
+<@ ./dispatch.fixtures/dispatch.request.json
+
+###
+### Capture correlationId for idempotency test
+@correlationId = {{dispatch_ok.response.body.$.correlationId}}
+@assignedDriverId = {{dispatch_ok.response.body.$.driverId}}
+
+###
+### [Dispatch] Missing correlation ID (must return VALIDATION_ERROR)
+### Expected: 400 with errorType=MISSING_CORRELATION_ID
+# @name dispatch_missingCorrelation
+POST {{api}}/dispatch
+Accept: {{json}}
+Content-Type: {{json}}
+Authorization: Bearer {{token}}
+request-id: {{$guid}}
+
+<@ ./dispatch.fixtures/dispatch.request.json
+
+###
+### ─────────────────────────────────────────────────────────────────────────────
+### IDEMPOTENCY VERIFICATION
+### ─────────────────────────────────────────────────────────────────────────────
+
+###
+### [Dispatch] Retry with same Idempotency-Key (must return same result)
+### Verifies: Same correlationId replay returns identical outcome
+### Note: Copy Idempotency-Key from dispatch_ok request to test manually
+# @prompt fixedIdempotencyKey Paste the Idempotency-Key used in dispatch_ok
+# @name dispatch_idempotent
+POST {{api}}/dispatch
+Accept: {{json}}
+Content-Type: {{json}}
+Authorization: Bearer {{token}}
+request-id: {{$guid}}
+Idempotency-Key: {{fixedIdempotencyKey}}
+
+<@ ./dispatch.fixtures/dispatch.request.json
+
+###
+### ─────────────────────────────────────────────────────────────────────────────
+### CONCURRENT DISPATCH (Manual Testing)
+### ─────────────────────────────────────────────────────────────────────────────
+
+###
+### [Dispatch] Concurrent request A (different correlationId)
+### Test: Execute this and dispatch_concurrent_b simultaneously
+### Expected: Exactly one 200, one conflict/error
+# @name dispatch_concurrent_a
+POST {{api}}/dispatch
+Accept: {{json}}
+Content-Type: {{json}}
+Authorization: Bearer {{token}}
+request-id: {{$guid}}
+Idempotency-Key: {{$guid}}
+
+<@ ./dispatch.fixtures/dispatch.request.json
+
+###
+### [Dispatch] Concurrent request B (different correlationId)
+# @name dispatch_concurrent_b
+POST {{api}}/dispatch
+Accept: {{json}}
+Content-Type: {{json}}
+Authorization: Bearer {{token}}
+request-id: {{$guid}}
+Idempotency-Key: {{$guid}}
+
+<@ ./dispatch.fixtures/dispatch.request.json

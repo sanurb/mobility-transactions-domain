@@ -1,0 +1,5 @@
+{
+  "email": "restuser@example.com",
+  "password": "password1234",
+  "rememberMe": true
+}

@@ -1,0 +1,51 @@
+# REST Client Templates
+# Common variables and patterns for all collections
+# Import: Copy @variables to collection files
+
+###
+### Base Configuration
+### Copy these variables to collection files
+###
+
+# Environment-resolved variables (from .vscode/settings.json)
+# @baseUrl = {{baseUrl}}
+# @api = {{baseUrl}}/api/v1
+# @json = application/json
+# @token = {{token}}
+
+###
+### Common Headers Template
+###
+
+# Read Request Template:
+# GET {{api}}/resource
+# Accept: {{json}}
+# Authorization: Bearer {{token}}
+# request-id: {{$guid}}
+
+###
+### Write Request Template:
+# POST {{api}}/resource
+# Accept: {{json}}
+# Content-Type: {{json}}
+# Authorization: Bearer {{token}}
+# request-id: {{$guid}}
+# idempotency-key: {{$guid}}
+
+###
+### System Variables Reference
+###
+# {{$guid}} - Generate UUID
+# {{$datetime iso8601}} - Current ISO timestamp
+# {{$timestamp}} - Unix timestamp
+# {{$dotenv VAR}} - Read from .env file
+# {{$processEnv VAR}} - Read from OS environment
+
+###
+### Response Chaining Reference
+###
+# Capture from named request:
+# @capturedId = {{requestName.response.body.$.fieldName}}
+#
+# Use in subsequent request:
+# GET {{api}}/resource/{{capturedId}}

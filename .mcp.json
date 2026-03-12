@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "overseer": {
+      "command": "npx",
+      "args": ["@dmmulroy/overseer", "mcp"]
+    },
+    "context7": {
+      "type": "http",
+      "url": "https://mcp.context7.com/mcp"
+    },
+    "grep": {
+      "type": "http",
+      "url": "https://mcp.grep.app"
+    }
+  }
+}
